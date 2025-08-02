@@ -1,0 +1,721 @@
+@page "/workflow/{workflowName}"
+@inject IGitHubService GitHubService
+@inject INotificationService NotificationService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+<PageTitle>@(workflow?.Name ?? "Workflow") - GitHub Workflow Manager</PageTitle>
+
+<div class="container-fluid">
+    @if (isLoading)
+    {
+        <div class="text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading workflow details...</p>
+        </div>
+    }
+    else if (workflow == null)
+    {
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            Workflow not found.
+            <a href="/" class="btn btn-outline-primary ms-2">
+                <i class="bi bi-arrow-left me-1"></i>
+                Back to Dashboard
+            </a>
+        </div>
+    }
+    else
+    {
+        <!-- Header -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <nav aria-label="breadcrumb">
+                            <ol class="breadcrumb">
+                                <li class="breadcrumb-item">
+                                    <a href="/" class="text-decoration-none">Dashboard</a>
+                                </li>
+                                <li class="breadcrumb-item active" aria-current="page">@workflow.Name</li>
+                            </ol>
+                        </nav>
+                        <h1 class="h2 mb-0">
+                            <i class="@GetWorkflowIcon(workflow) me-2"></i>
+                            @workflow.Name
+                        </h1>
+                        @if (!string.IsNullOrEmpty(workflow.Description))
+                        {
+                            <p class="text-muted">@workflow.Description</p>
+                        }
+
+                        @if (workflow.Metadata != null)
+                        {
+                            <div class="row mb-3">
+                                <div class="col-12">
+                                    <div class="card bg-light">
+                                        <div class="card-header">
+                                            <h6 class="card-title mb-0">
+                                                <i class="bi bi-info-circle me-2"></i>
+                                                Workflow Metadata
+                                            </h6>
+                                        </div>
+                                        <div class="card-body">
+                                            @if (!string.IsNullOrWhiteSpace(workflow.Metadata.Purpose))
+                                            {
+                                                <div class="mb-3">
+                                                    <strong>Purpose:</strong>
+                                                    <p class="mb-0">@workflow.Metadata.Purpose</p>
+                                                </div>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(workflow.Metadata.Trigger))
+                                            {
+                                                <div class="mb-3">
+                                                    <strong>Trigger Description:</strong>
+                                                    <p class="mb-0">@workflow.Metadata.Trigger</p>
+                                                </div>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(workflow.Metadata.Scope))
+                                            {
+                                                <div class="mb-3">
+                                                    <strong>Scope:</strong>
+                                                    <p class="mb-0">@workflow.Metadata.Scope</p>
+                                                </div>
+                                            }
+                                            @if (workflow.Metadata.Actions.Any())
+                                            {
+                                                <div class="mb-3">
+                                                    <strong>Actions:</strong>
+                                                    <ul class="mb-0">
+                                                        @foreach (var action in workflow.Metadata.Actions)
+                                                        {
+                                                            <li>@action</li>
+                                                        }
+                                                    </ul>
+                                                </div>
+                                            }
+                                            @if (workflow.Metadata.Inputs.Any())
+                                            {
+                                                <div class="mb-0">
+                                                    <strong>Documented Inputs:</strong>
+                                                    <ul class="mb-0">
+                                                        @foreach (var input in workflow.Metadata.Inputs)
+                                                        {
+                                                            <li>@input</li>
+                                                        }
+                                                    </ul>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-outline-primary" @onclick="RefreshWorkflow" disabled="@isExecuting">
+                            <i class="bi bi-arrow-clockwise me-1"></i>
+                            Refresh
+                        </button>
+                        @if (workflow.On.WorkflowDispatch)
+                        {
+                            <button type="button" class="btn btn-primary" @onclick="ShowExecutionForm" disabled="@isExecuting">
+                                <i class="bi bi-play-fill me-1"></i>
+                                Run Workflow
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- Workflow Information -->
+            <div class="col-lg-8">
+                <!-- Execution Form -->
+                @if (showExecutionForm && workflow.On.WorkflowDispatch)
+                {
+                    <div class="card mb-4">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-play-fill me-2"></i>
+                                Run Workflow
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <EditForm Model="executionRequest" OnValidSubmit="ExecuteWorkflow">
+                                <DataAnnotationsValidator />
+
+                                @if (!string.IsNullOrEmpty(executionError))
+                                {
+                                    <div class="alert alert-danger" role="alert">
+                                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                                        @executionError
+                                    </div>
+                                }
+
+                                <div class="mb-3">
+                                    <label for="ref" class="form-label">Branch/Tag</label>
+                                    <InputText id="ref" class="form-control" @bind-Value="executionRequest.Ref" placeholder="main" />
+                                    <div class="form-text">Specify the branch or tag to run the workflow on.</div>
+                                </div>
+
+                                @if (workflow.Inputs.Any())
+                                {
+                                    <h6 class="mb-3">Workflow Parameters</h6>
+                                    @foreach (var input in workflow.Inputs)
+                                    {
+                                        <div class="mb-3">
+                                            @{
+                                                var inputId = $"input-{input.Key}";
+                                            }
+                                            <label for="@inputId" class="form-label">
+                                                @input.Key
+                                                @if (input.Value.Required)
+                                                {
+                                                    <span class="text-danger">*</span>
+                                                }
+                                            </label>
+
+                                            @if (input.Value.Type == "boolean")
+                                            {
+                                                <div class="form-check">
+                                                    <input id="@inputId" type="checkbox" class="form-check-input" 
+                                                           checked="@GetBooleanValue(input.Key)" 
+                                                           @onchange="@(e => SetInputValue(input.Key, (bool)e.Value!))" />
+                                                    <label class="form-check-label" for="@inputId">
+                                                        @input.Value.Description
+                                                    </label>
+                                                </div>
+                                            }
+                                            else if (input.Value.Type == "choice" && input.Value.Options.Any())
+                                            {
+                                                <select id="@inputId" class="form-select" 
+                                                        value="@GetStringValue(input.Key)" 
+                                                        @onchange="@(e => SetInputValue(input.Key, e.Value?.ToString() ?? ""))">
+                                                    <option value="">Select an option...</option>
+                                                    @foreach (var option in input.Value.Options)
+                                                    {
+                                                        <option value="@option">@option</option>
+                                                    }
+                                                </select>
+                                            }
+                                            else
+                                            {
+                                                <input id="@inputId" type="text" class="form-control" 
+                                                       value="@GetStringValue(input.Key)" 
+                                                       @onchange="@(e => SetInputValue(input.Key, e.Value?.ToString() ?? ""))"
+                                                       placeholder="@(input.Value.Default?.ToString() ?? "")" />
+                                            }
+
+                                            @if (!string.IsNullOrEmpty(input.Value.Description))
+                                            {
+                                                <div class="form-text">@input.Value.Description</div>
+                                            }
+                                        </div>
+                                    }
+                                }
+
+                                <div class="d-flex justify-content-end gap-2">
+                                    <button type="button" class="btn btn-secondary" @onclick="HideExecutionForm" disabled="@isExecuting">
+                                        Cancel
+                                    </button>
+                                    <button type="submit" class="btn btn-primary" disabled="@isExecuting">
+                                        @if (isExecuting)
+                                        {
+                                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                            <span>Executing...</span>
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-play-fill me-1"></i>
+                                            <span>Execute</span>
+                                        }
+                                    </button>
+                                </div>
+                            </EditForm>
+                        </div>
+                    </div>
+                }
+
+                <!-- Recent Runs -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-clock-history me-2"></i>
+                            Recent Runs
+                        </h5>
+                        <button type="button" class="btn btn-sm btn-outline-primary" @onclick="RefreshRuns">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        @if (recentRuns.Any())
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Run #</th>
+                                            <th>Status</th>
+                                            <th>Event</th>
+                                            <th>Started</th>
+                                            <th>Duration</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var run in recentRuns)
+                                        {
+                                            <tr>
+                                                <td>
+                                                    <a href="@run.HtmlUrl" target="_blank" rel="noopener" class="text-decoration-none">
+                                                        #@run.RunNumber
+                                                    </a>
+                                                </td>
+                                                <td>
+                                                    <span class="badge @GetStatusBadgeClass(run.Status, run.Conclusion)">
+                                                        @GetStatusText(run.Status, run.Conclusion)
+                                                    </span>
+                                                </td>
+                                                <td>@run.Event</td>
+                                                <td>@run.CreatedAt.ToString("MMM dd, HH:mm")</td>
+                                                <td>
+                                                    @if (run.UpdatedAt.HasValue)
+                                                    {
+                                                        var duration = run.UpdatedAt.Value - run.CreatedAt;
+                                                        <span>@FormatDuration(duration)</span>
+                                                    }
+                                                    else if (run.Status == "in_progress")
+                                                    {
+                                                        var duration = DateTime.UtcNow - run.CreatedAt;
+                                                        <span class="text-muted">@FormatDuration(duration)</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-muted">-</span>
+                                                    }
+                                                </td>
+                                                <td>
+                                                    <a href="@run.HtmlUrl" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">
+                                                        <i class="bi bi-box-arrow-up-right"></i>
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="text-muted mb-0">No recent runs found.</p>
+                        }
+                    </div>
+                </div>
+
+                <!-- Workflow File Content -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-file-code me-2"></i>
+                            Workflow File
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <small class="text-muted">
+                                <strong>File:</strong> @workflow.FileName
+                                <br />
+                                <strong>Path:</strong> @workflow.FilePath
+                            </small>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CopyWorkflowContent">
+                                <i class="bi bi-clipboard me-1"></i>
+                                Copy
+                            </button>
+                        </div>
+                        <pre class="bg-light p-3 rounded" style="max-height: 500px; overflow-y: auto;"><code>@workflow.Content</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sidebar -->
+            <div class="col-lg-4">
+                <!-- Workflow Info -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-info-circle me-2"></i>
+                            Workflow Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <dl class="row">
+                            <dt class="col-sm-4">Status:</dt>
+                            <dd class="col-sm-8">
+                                <span class="badge @GetStatusBadgeClass(workflow.LastRun?.Status, workflow.LastRun?.Conclusion)">
+                                    @GetStatusText(workflow.LastRun?.Status, workflow.LastRun?.Conclusion)
+                                </span>
+                            </dd>
+
+                            <dt class="col-sm-4">Triggers:</dt>
+                            <dd class="col-sm-8">@string.Join(", ", GetTriggersList(workflow.On))</dd>
+
+                            <dt class="col-sm-4">Parameters:</dt>
+                            <dd class="col-sm-8">@workflow.Inputs.Count</dd>
+
+                            <dt class="col-sm-4">Last Modified:</dt>
+                            <dd class="col-sm-8">@workflow.LastModified.ToString("MMM dd, yyyy")</dd>
+
+                            @if (workflow.LastRun != null)
+                            {
+                                <dt class="col-sm-4">Last Run:</dt>
+                                <dd class="col-sm-8">
+                                    <a href="@workflow.LastRun.HtmlUrl" target="_blank" rel="noopener">
+                                        #@workflow.LastRun.RunNumber
+                                    </a>
+                                    <br />
+                                    <small class="text-muted">@workflow.LastRun.CreatedAt.ToString("MMM dd, HH:mm")</small>
+                                </dd>
+                            }
+                        </dl>
+                    </div>
+                </div>
+
+                <!-- Input Parameters -->
+                @if (workflow.Inputs.Any())
+                {
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-sliders me-2"></i>
+                                Input Parameters
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            @foreach (var input in workflow.Inputs)
+                            {
+                                <div class="mb-3">
+                                    <h6 class="mb-1">
+                                        @input.Key
+                                        @if (input.Value.Required)
+                                        {
+                                            <span class="badge bg-danger ms-1">Required</span>
+                                        }
+                                    </h6>
+                                    <p class="text-muted small mb-1">@input.Value.Description</p>
+                                    <div class="small">
+                                        <strong>Type:</strong> @input.Value.Type
+                                        @if (input.Value.Default != null)
+                                        {
+                                            <br /><strong>Default:</strong> @input.Value.Default
+                                        }
+                                        @if (input.Value.Options.Any())
+                                        {
+                                            <br /><strong>Options:</strong> @string.Join(", ", input.Value.Options)
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string WorkflowName { get; set; } = "";
+
+    private WorkflowDefinition? workflow;
+    private List<WorkflowRunInfo> recentRuns = new();
+    private bool isLoading = true;
+    private bool showExecutionForm = false;
+    private bool isExecuting = false;
+    private string executionError = "";
+    private WorkflowExecutionRequest executionRequest = new();
+    private HubConnection? hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadWorkflow();
+        await LoadRecentRuns();
+        await InitializeSignalR();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(WorkflowName))
+        {
+            await LoadWorkflow();
+            await LoadRecentRuns();
+        }
+    }
+
+    private async Task LoadWorkflow()
+    {
+        isLoading = true;
+        try
+        {
+            Console.WriteLine($"Debug - Loading workflow: {WorkflowName}");
+            Console.WriteLine($"Debug - Decoded workflow name: {Uri.UnescapeDataString(WorkflowName)}");
+            
+            workflow = await GitHubService.GetWorkflowAsync(Uri.UnescapeDataString(WorkflowName));
+            
+            Console.WriteLine($"Debug - Workflow loaded: {workflow != null}");
+            if (workflow != null)
+            {
+                Console.WriteLine($"Debug - Workflow name: {workflow.Name}, File: {workflow.FileName}");
+                executionRequest.WorkflowId = workflow.Name;
+                executionRequest.Ref = "main";
+            }
+            else
+            {
+                Console.WriteLine("Debug - Workflow is null");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Debug - Error loading workflow: {ex}");
+            await NotificationService.NotifyErrorAsync($"Error loading workflow: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            Console.WriteLine("Debug - Loading complete, isLoading = false");
+        }
+    }
+
+    private async Task LoadRecentRuns()
+    {
+        if (workflow != null)
+        {
+            try
+            {
+                recentRuns = await GitHubService.GetWorkflowRunsAsync(workflow.Name, 10);
+            }
+            catch (Exception ex)
+            {
+                await NotificationService.NotifyErrorAsync($"Error loading workflow runs: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task RefreshWorkflow()
+    {
+        await LoadWorkflow();
+        StateHasChanged();
+    }
+
+    private async Task RefreshRuns()
+    {
+        await LoadRecentRuns();
+        StateHasChanged();
+    }
+
+    private void ShowExecutionForm()
+    {
+        showExecutionForm = true;
+        executionError = "";
+        
+        // Initialize inputs with default values
+        executionRequest.Inputs.Clear();
+        foreach (var input in workflow?.Inputs ?? new Dictionary<string, WorkflowInput>())
+        {
+            if (input.Value.Default != null)
+            {
+                executionRequest.Inputs[input.Key] = input.Value.Default;
+            }
+        }
+    }
+
+    private void HideExecutionForm()
+    {
+        showExecutionForm = false;
+        executionError = "";
+    }
+
+    private async Task ExecuteWorkflow()
+    {
+        isExecuting = true;
+        executionError = "";
+
+        try
+        {
+            // Validate required inputs
+            foreach (var input in workflow?.Inputs ?? new Dictionary<string, WorkflowInput>())
+            {
+                if (input.Value.Required && (!executionRequest.Inputs.ContainsKey(input.Key) || 
+                    string.IsNullOrEmpty(executionRequest.Inputs[input.Key]?.ToString())))
+                {
+                    executionError = $"Required parameter '{input.Key}' is missing.";
+                    return;
+                }
+            }
+
+            var result = await GitHubService.TriggerWorkflowAsync(executionRequest);
+            
+            if (result.Success)
+            {
+                await NotificationService.NotifyInfoAsync($"Workflow '{workflow?.Name}' triggered successfully");
+                showExecutionForm = false;
+                await LoadRecentRuns(); // Refresh the runs list
+            }
+            else
+            {
+                executionError = result.Error ?? "Unknown error occurred";
+            }
+        }
+        catch (Exception ex)
+        {
+            executionError = ex.Message;
+        }
+        finally
+        {
+            isExecuting = false;
+        }
+    }
+
+    private string GetStringValue(string key)
+    {
+        return executionRequest.Inputs.ContainsKey(key) ? 
+               executionRequest.Inputs[key]?.ToString() ?? "" : "";
+    }
+
+    private bool GetBooleanValue(string key)
+    {
+        return executionRequest.Inputs.ContainsKey(key) && 
+               bool.TryParse(executionRequest.Inputs[key]?.ToString(), out var value) ? value : false;
+    }
+
+    private void SetInputValue(string key, object value)
+    {
+        executionRequest.Inputs[key] = value;
+    }
+
+    private async Task CopyWorkflowContent()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", workflow?.Content ?? "");
+            await NotificationService.NotifyInfoAsync("Workflow content copied to clipboard");
+        }
+        catch (Exception)
+        {
+            await NotificationService.NotifyErrorAsync("Could not copy to clipboard");
+        }
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl($"{Navigation.BaseUri}workflowhub")
+                .Build();
+
+            hubConnection.On<WorkflowRunInfo>("WorkflowRunUpdated", (workflowRun) =>
+            {
+                InvokeAsync(async () =>
+                {
+                    // Update the workflow's last run
+                    if (workflow != null)
+                    {
+                        workflow.LastRun = workflowRun;
+                        await LoadRecentRuns(); // Refresh runs list
+                        StateHasChanged();
+                    }
+                });
+            });
+
+            await hubConnection.StartAsync();
+            if (workflow != null)
+            {
+                await hubConnection.SendAsync("JoinWorkflowGroup", workflow.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SignalR connection failed: {ex.Message}");
+        }
+    }
+
+    // Helper methods (same as in Home.razor)
+    private static string GetWorkflowIcon(WorkflowDefinition workflow)
+    {
+        if (!workflow.IsEnabled) return "bi bi-pause-circle text-secondary";
+        
+        return workflow.LastRun?.Status switch
+        {
+            "completed" when workflow.LastRun.Conclusion == "success" => "bi bi-check-circle text-success",
+            "completed" when workflow.LastRun.Conclusion == "failure" => "bi bi-x-circle text-danger",
+            "in_progress" => "bi bi-clock text-warning",
+            "queued" => "bi bi-hourglass text-info",
+            _ => "bi bi-workflow"
+        };
+    }
+
+    private static string GetStatusBadgeClass(string? status, string? conclusion = null)
+    {
+        return status switch
+        {
+            "completed" when conclusion == "success" => "bg-success",
+            "completed" when conclusion == "failure" => "bg-danger",
+            "completed" => "bg-secondary",
+            "in_progress" => "bg-warning text-dark",
+            "queued" => "bg-info",
+            _ => "bg-secondary"
+        };
+    }
+
+    private static string GetStatusText(string? status, string? conclusion = null)
+    {
+        return status switch
+        {
+            "completed" when conclusion == "success" => "Success",
+            "completed" when conclusion == "failure" => "Failed",
+            "completed" when conclusion == "cancelled" => "Cancelled",
+            "completed" => "Completed",
+            "in_progress" => "Running",
+            "queued" => "Queued",
+            null => "Never Run",
+            _ => status
+        };
+    }
+
+    private static List<string> GetTriggersList(WorkflowTriggers triggers)
+    {
+        var list = new List<string>();
+        
+        if (triggers.Push) list.Add("Push");
+        if (triggers.PullRequest) list.Add("PR");
+        if (triggers.WorkflowDispatch) list.Add("Manual");
+        if (triggers.Schedule) list.Add("Schedule");
+        list.AddRange(triggers.Other);
+        
+        return list.Any() ? list : new List<string> { "None" };
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalDays >= 1)
+            return $"{(int)duration.TotalDays}d {duration.Hours}h";
+        if (duration.TotalHours >= 1)
+            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
+        if (duration.TotalMinutes >= 1)
+            return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
+        return $"{(int)duration.TotalSeconds}s";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}

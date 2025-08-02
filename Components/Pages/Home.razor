@@ -1,0 +1,621 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.Components.Forms
+@using System.Text.Json
+@inject IGitHubConfigurationService ConfigurationService
+@inject IGitHubService GitHubService
+@inject INotificationService NotificationService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+@inject HttpClient HttpClient
+@implements IAsyncDisposable
+
+<PageTitle>Dashboard - GitHub Workflow Manager</PageTitle>
+
+@if (!isConfigured)
+{
+    <div class="container-fluid">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark">
+                        <h4 class="card-title mb-0">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                            Setup Required
+                        </h4>
+                    </div>
+                    <div class="card-body text-center">
+                        <p class="card-text">
+                            GitHub Workflow Manager needs to be configured before you can manage workflows.
+                        </p>
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                            <a href="/setup" class="btn btn-primary">
+                                <i class="bi bi-gear-fill me-2"></i>
+                                Configure GitHub Connection
+                            </a>
+                            <button type="button" class="btn btn-outline-secondary" @onclick="RefreshConfiguration">
+                                <i class="bi bi-arrow-clockwise me-1"></i>
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h1 class="h2 mb-0">
+                        <i class="bi bi-kanban me-2"></i>
+                        Workflow Dashboard
+                    </h1>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-outline-primary" @onclick="RefreshWorkflows" disabled="@isLoading">
+                            <i class="bi bi-arrow-clockwise me-1"></i>
+                            Refresh
+                        </button>
+                        @if (loadingWorkflowRuns)
+                        {
+                            <button type="button" class="btn btn-outline-secondary" disabled>
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                Loading Runs...
+                            </button>
+                        }
+                        <a href="/setup" class="btn btn-outline-secondary">
+                            <i class="bi bi-gear me-1"></i>
+                            Settings
+                        </a>
+                    </div>
+                </div>
+
+                @if (isLoading)
+                {
+                    <div class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading workflows...</p>
+                    </div>
+                }
+                else if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger" role="alert">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        @errorMessage
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="RefreshWorkflows">
+                            Try Again
+                        </button>
+                    </div>
+                }
+                else if (workflows.Count == 0)
+                {
+                    <div class="alert alert-info" role="alert">
+                        <i class="bi bi-info-circle-fill me-2"></i>
+                        No workflows found in the repository. Make sure you have workflow files in the configured directory.
+                    </div>
+                }
+                else
+                {
+                    <div class="row">
+                        @foreach (var workflow in workflows)
+                        {
+                            <div class="col-lg-4 col-md-6 mb-4">
+                                <div class="card h-100 @GetWorkflowCardClass(workflow)">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5 class="card-title mb-0">
+                                            <i class="@GetWorkflowIcon(workflow) me-2"></i>
+                                            @workflow.Name
+                                        </h5>
+                                        <span class="badge @GetStatusBadgeClass(workflow.LastRun?.Status)">
+                                            @GetStatusText(workflow.LastRun?.Status)
+                                        </span>
+                                    </div>
+                                    <div class="card-body">
+                                        @if (!string.IsNullOrEmpty(workflow.Description))
+                                        {
+                                            <p class="card-text text-muted">@workflow.Description</p>
+                                        }
+
+                                        @if (workflow.Metadata != null)
+                                        {
+                                            <div class="mb-3">
+                                                @if (!string.IsNullOrWhiteSpace(workflow.Metadata.Purpose))
+                                                {
+                                                    <div class="mb-2">
+                                                        <small class="text-muted">
+                                                            <strong>Purpose:</strong> @workflow.Metadata.Purpose
+                                                        </small>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(workflow.Metadata.Scope))
+                                                {
+                                                    <div class="mb-2">
+                                                        <small class="text-muted">
+                                                            <strong>Scope:</strong> @workflow.Metadata.Scope
+                                                        </small>
+                                                    </div>
+                                                }
+                                                @if (workflow.Metadata.Actions.Any())
+                                                {
+                                                    <div class="mb-2">
+                                                        <small class="text-muted">
+                                                            <strong>Actions:</strong>
+                                                            <ul class="list-unstyled ms-3 mb-0">
+                                                                @foreach (var action in workflow.Metadata.Actions.Take(3))
+                                                                {
+                                                                    <li class="small">• @action</li>
+                                                                }
+                                                                @if (workflow.Metadata.Actions.Count > 3)
+                                                                {
+                                                                    <li class="small text-muted">• ... and @(workflow.Metadata.Actions.Count - 3) more</li>
+                                                                }
+                                                            </ul>
+                                                        </small>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+
+                                        <div class="mb-3">
+                                            <small class="text-muted">
+                                                <strong>Triggers:</strong>
+                                                @string.Join(", ", GetTriggersList(workflow.On))
+                                            </small>
+                                        </div>
+
+                                        @if (workflow.LastRun != null)
+                                        {
+                                            <div class="mb-3">
+                                                <small class="text-muted">
+                                                    <strong>Last Run:</strong>
+                                                    <a href="@workflow.LastRun.HtmlUrl" target="_blank" rel="noopener" class="text-decoration-none">
+                                                        #@workflow.LastRun.RunNumber
+                                                    </a>
+                                                    (@workflow.LastRun.CreatedAt.ToString("MMM dd, HH:mm"))
+                                                </small>
+                                            </div>
+                                        }
+
+                                        @if (workflow.Inputs.Any())
+                                        {
+                                            <div class="mb-3">
+                                                <small class="text-muted">
+                                                    <strong>Parameters:</strong> @workflow.Inputs.Count input(s)
+                                                </small>
+                                            </div>
+                                        }
+                                    </div>
+                                    <div class="card-footer bg-transparent">
+                                        <div class="btn-group w-100" role="group">
+                                            <a href="/workflow/@Uri.EscapeDataString(workflow.Name)" class="btn btn-outline-primary btn-sm">
+                                                <i class="bi bi-eye me-1"></i>
+                                                View
+                                            </a>
+                                            @if (workflow.On.WorkflowDispatch)
+                                            {
+                                                <button type="button" class="btn btn-primary btn-sm" @onclick="() => TriggerWorkflow(workflow)">
+                                                    <i class="bi bi-play-fill me-1"></i>
+                                                    Run
+                                                </button>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+
+                    <!-- Summary Stats -->
+                    <div class="row mt-4">
+                        <div class="col-md-3 col-sm-6 mb-3">
+                            <div class="card bg-primary text-white">
+                                <div class="card-body text-center">
+                                    <h4 class="card-title">@workflows.Count</h4>
+                                    <p class="card-text">Total Workflows</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3 col-sm-6 mb-3">
+                            <div class="card bg-success text-white">
+                                <div class="card-body text-center">
+                                    <h4 class="card-title">@workflows.Count(w => w.On.WorkflowDispatch)</h4>
+                                    <p class="card-text">Manual Triggers</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3 col-sm-6 mb-3">
+                            <div class="card bg-info text-white">
+                                <div class="card-body text-center">
+                                    <h4 class="card-title">@workflows.Count(w => w.LastRun?.Status == "completed")</h4>
+                                    <p class="card-text">Completed Runs</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3 col-sm-6 mb-3">
+                            <div class="card bg-warning text-white">
+                                <div class="card-body text-center">
+                                    <h4 class="card-title">@workflows.Count(w => w.LastRun?.Status == "in_progress")</h4>
+                                    <p class="card-text">Running</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool isConfigured = false;
+    private bool isLoading = true;
+    private bool initialLoadComplete = false;
+    private bool loadingWorkflowRuns = false;
+    private string errorMessage = "";
+    private List<WorkflowDefinition> workflows = new();
+    private Dictionary<string, WorkflowRunInfo?> latestRuns = new();
+    private HubConnection? hubConnection;
+    private System.Timers.Timer? refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CheckConfiguration();
+        
+        if (isConfigured)
+        {
+            await LoadWorkflowsFromCache();
+            _ = LoadWorkflowRunsAsync(); // Load runs in background
+            await InitializeSignalR();
+            SetupAutoRefresh();
+        }
+        
+        initialLoadComplete = true;
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !initialLoadComplete)
+        {
+            await CheckConfiguration();
+            if (isConfigured)
+            {
+                await LoadWorkflowsFromCache();
+                _ = LoadWorkflowRunsAsync();
+            }
+            initialLoadComplete = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CheckConfiguration()
+    {
+        try
+        {
+            var config = await ConfigurationService.GetConfigurationAsync();
+            isConfigured = await ConfigurationService.IsConfiguredAsync();
+            
+            Console.WriteLine($"Debug - Configuration check: IsConfigured={isConfigured}, Config is null={config == null}");
+            if (config != null)
+            {
+                Console.WriteLine($"Debug - Config details: Owner={config.RepositoryOwner}, Repo={config.RepositoryName}, Token length={config.AccessToken?.Length ?? 0}");
+                Console.WriteLine($"Debug - Config.IsConfigured property={config.IsConfigured}");
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error checking configuration: {ex.Message}";
+            Console.WriteLine($"Debug - Error checking configuration: {ex}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadWorkflowsFromCache()
+    {
+        isLoading = true;
+        errorMessage = "";
+
+        try
+        {
+            Console.WriteLine("Loading workflows from cache...");
+            
+            // Use the API endpoint to get cached workflows
+            var response = await HttpClient.GetAsync("/api/WorkflowApi/workflows");
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var workflowsJson = await response.Content.ReadAsStringAsync();
+                workflows = System.Text.Json.JsonSerializer.Deserialize<List<WorkflowDefinition>>(workflowsJson, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                }) ?? new List<WorkflowDefinition>();
+                
+                Console.WriteLine($"Loaded {workflows.Count} workflows from cache");
+            }
+            else
+            {
+                errorMessage = "Failed to load workflows from server";
+                Console.WriteLine($"Failed to load workflows: {response.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading workflows: {ex.Message}";
+            Console.WriteLine($"Error loading workflows: {ex}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadWorkflowRunsAsync()
+    {
+        if (workflows.Count == 0) return;
+
+        loadingWorkflowRuns = true;
+        StateHasChanged();
+
+        try
+        {
+            Console.WriteLine("Loading latest workflow runs...");
+            
+            var workflowNames = workflows.Select(w => w.Name).ToArray();
+            var queryString = string.Join("&", workflowNames.Select(name => $"workflowNames={Uri.EscapeDataString(name)}"));
+            
+            var response = await HttpClient.GetAsync($"/api/WorkflowApi/workflow-runs/latest?{queryString}");
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var runsJson = await response.Content.ReadAsStringAsync();
+                latestRuns = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, WorkflowRunInfo?>>(runsJson, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                }) ?? new Dictionary<string, WorkflowRunInfo?>();
+                
+                // Update workflows with latest run info
+                foreach (var workflow in workflows)
+                {
+                    if (latestRuns.TryGetValue(workflow.Name, out var latestRun))
+                    {
+                        workflow.LastRun = latestRun;
+                    }
+                }
+                
+                Console.WriteLine($"Loaded latest runs for {latestRuns.Count} workflows");
+            }
+            else
+            {
+                Console.WriteLine($"Failed to load workflow runs: {response.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading workflow runs: {ex}");
+        }
+        finally
+        {
+            loadingWorkflowRuns = false;
+            StateHasChanged();
+        }
+    }
+
+    private void SetupAutoRefresh()
+    {
+        // Refresh workflow runs every 30 seconds
+        refreshTimer = new System.Timers.Timer(30000);
+        refreshTimer.Elapsed += async (sender, e) =>
+        {
+            if (!loadingWorkflowRuns)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadWorkflowRunsAsync();
+                });
+            }
+        };
+        refreshTimer.Start();
+    }
+
+    private async Task RefreshWorkflows()
+    {
+        // Clear cache and reload everything
+        try
+        {
+            var response = await HttpClient.DeleteAsync("/api/WorkflowApi/cache/workflows");
+            if (response.IsSuccessStatusCode)
+            {
+                await LoadWorkflowsFromCache();
+                await LoadWorkflowRunsAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error refreshing workflows: {ex.Message}";
+        }
+        
+        StateHasChanged();
+    }
+
+    private async Task RefreshConfiguration()
+    {
+        isLoading = true;
+        await CheckConfiguration();
+        
+        if (isConfigured)
+        {
+            await LoadWorkflowsFromCache();
+            await LoadWorkflowRunsAsync();
+        }
+        
+        StateHasChanged();
+    }
+
+    private async Task TriggerWorkflow(WorkflowDefinition workflow)
+    {
+        if (workflow.Inputs.Any())
+        {
+            // Navigate to the workflow detail page for parameter input
+            Navigation.NavigateTo($"/workflow/{Uri.EscapeDataString(workflow.Name)}");
+        }
+        else
+        {
+            // Trigger immediately using API
+            try
+            {
+                var request = new WorkflowExecutionRequest
+                {
+                    WorkflowId = workflow.Name,
+                    Ref = "main"
+                };
+
+                var response = await HttpClient.PostAsJsonAsync("/api/WorkflowApi/workflow/trigger", request);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = await response.Content.ReadFromJsonAsync<WorkflowExecutionResult>();
+                    
+                    if (result?.Success == true)
+                    {
+                        await NotificationService.NotifyInfoAsync($"Workflow '{workflow.Name}' triggered successfully");
+                        // Refresh runs after a short delay
+                        await Task.Delay(2000);
+                        await LoadWorkflowRunsAsync();
+                    }
+                    else
+                    {
+                        await NotificationService.NotifyErrorAsync($"Failed to trigger workflow: {result?.Error}");
+                    }
+                }
+                else
+                {
+                    await NotificationService.NotifyErrorAsync("Failed to trigger workflow");
+                }
+            }
+            catch (Exception ex)
+            {
+                await NotificationService.NotifyErrorAsync($"Error triggering workflow: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl($"{Navigation.BaseUri}workflowhub")
+                .Build();
+
+            hubConnection.On<WorkflowRunInfo>("WorkflowRunUpdated", (workflowRun) =>
+            {
+                InvokeAsync(() =>
+                {
+                    // Update the corresponding workflow
+                    var workflow = workflows.FirstOrDefault(w => w.Name == workflowRun.Event); // This might need adjustment
+                    if (workflow != null)
+                    {
+                        workflow.LastRun = workflowRun;
+                        StateHasChanged();
+                    }
+                });
+            });
+
+            hubConnection.On<object>("Notification", (notification) =>
+            {
+                InvokeAsync(StateHasChanged);
+            });
+
+            await hubConnection.StartAsync();
+            await hubConnection.SendAsync("JoinGlobalGroup");
+        }
+        catch (Exception ex)
+        {
+            // SignalR connection failed, but the app should still work
+            Console.WriteLine($"SignalR connection failed: {ex.Message}");
+        }
+    }
+
+    private static string GetWorkflowCardClass(WorkflowDefinition workflow)
+    {
+        if (!workflow.IsEnabled) return "border-secondary";
+        
+        return workflow.LastRun?.Status switch
+        {
+            "completed" when workflow.LastRun.Conclusion == "success" => "border-success",
+            "completed" when workflow.LastRun.Conclusion == "failure" => "border-danger",
+            "in_progress" => "border-warning",
+            _ => ""
+        };
+    }
+
+    private static string GetWorkflowIcon(WorkflowDefinition workflow)
+    {
+        if (!workflow.IsEnabled) return "bi bi-pause-circle text-secondary";
+        
+        return workflow.LastRun?.Status switch
+        {
+            "completed" when workflow.LastRun.Conclusion == "success" => "bi bi-check-circle text-success",
+            "completed" when workflow.LastRun.Conclusion == "failure" => "bi bi-x-circle text-danger",
+            "in_progress" => "bi bi-clock text-warning",
+            "queued" => "bi bi-hourglass text-info",
+            _ => "bi bi-workflow"
+        };
+    }
+
+    private static string GetStatusBadgeClass(string? status)
+    {
+        return status switch
+        {
+            "completed" => "bg-success",
+            "in_progress" => "bg-warning text-dark",
+            "queued" => "bg-info",
+            "failure" => "bg-danger",
+            _ => "bg-secondary"
+        };
+    }
+
+    private static string GetStatusText(string? status)
+    {
+        return status switch
+        {
+            "completed" => "Completed",
+            "in_progress" => "Running",
+            "queued" => "Queued",
+            "failure" => "Failed",
+            null => "Never Run",
+            _ => status
+        };
+    }
+
+    private static List<string> GetTriggersList(WorkflowTriggers triggers)
+    {
+        var list = new List<string>();
+        
+        if (triggers.Push) list.Add("Push");
+        if (triggers.PullRequest) list.Add("PR");
+        if (triggers.WorkflowDispatch) list.Add("Manual");
+        if (triggers.Schedule) list.Add("Schedule");
+        list.AddRange(triggers.Other);
+        
+        return list.Any() ? list : new List<string> { "None" };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        refreshTimer?.Stop();
+        refreshTimer?.Dispose();
+        
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}

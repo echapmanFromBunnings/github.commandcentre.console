@@ -1,0 +1,137 @@
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+
+<div id="notification-container" class="position-fixed top-0 end-0 p-3" style="z-index: 9999;">
+    @foreach (var notification in notifications)
+    {
+        <div class="toast show" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <i class="@GetNotificationIcon(notification.Type) me-2"></i>
+                <strong class="me-auto">@GetNotificationTitle(notification.Type)</strong>
+                <small class="text-muted">@notification.Timestamp.ToString("HH:mm:ss")</small>
+                <button type="button" class="btn-close" @onclick="() => RemoveNotification(notification.Id)"></button>
+            </div>
+            <div class="toast-body">
+                @notification.Message
+                @if (!string.IsNullOrEmpty(notification.Details))
+                {
+                    <br />
+                    <small class="text-muted">@notification.Details</small>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private List<NotificationItem> notifications = new();
+    private HubConnection? hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InitializeSignalR();
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl($"{Navigation.BaseUri}workflowhub")
+                .Build();
+
+            hubConnection.On<object>("Notification", async (notification) =>
+            {
+                await InvokeAsync(() =>
+                {
+                    var notificationData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(
+                        System.Text.Json.JsonSerializer.Serialize(notification));
+
+                    if (notificationData != null)
+                    {
+                        var item = new NotificationItem
+                        {
+                            Id = Guid.NewGuid(),
+                            Type = notificationData.GetValueOrDefault("Type")?.ToString() ?? "Info",
+                            Message = notificationData.GetValueOrDefault("Message")?.ToString() ?? "",
+                            Details = notificationData.GetValueOrDefault("Details")?.ToString(),
+                            Timestamp = DateTime.Now
+                        };
+
+                        AddNotification(item);
+                    }
+                });
+            });
+
+            await hubConnection.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SignalR connection failed: {ex.Message}");
+        }
+    }
+
+    private void AddNotification(NotificationItem notification)
+    {
+        notifications.Insert(0, notification);
+        
+        // Auto-remove after 5 seconds for info notifications, 10 seconds for errors
+        var delay = notification.Type == "Error" ? 10000 : 5000;
+        
+        Task.Delay(delay).ContinueWith(_ =>
+        {
+            InvokeAsync(() =>
+            {
+                RemoveNotification(notification.Id);
+            });
+        });
+
+        StateHasChanged();
+    }
+
+    private void RemoveNotification(Guid id)
+    {
+        notifications.RemoveAll(n => n.Id == id);
+        StateHasChanged();
+    }
+
+    private static string GetNotificationIcon(string type)
+    {
+        return type switch
+        {
+            "Error" => "bi bi-exclamation-triangle-fill text-danger",
+            "WorkflowStatusChange" => "bi bi-workflow text-primary",
+            "Info" => "bi bi-info-circle-fill text-info",
+            _ => "bi bi-bell-fill text-primary"
+        };
+    }
+
+    private static string GetNotificationTitle(string type)
+    {
+        return type switch
+        {
+            "Error" => "Error",
+            "WorkflowStatusChange" => "Workflow Update",
+            "Info" => "Information",
+            _ => "Notification"
+        };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+
+    private class NotificationItem
+    {
+        public Guid Id { get; set; }
+        public string Type { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string? Details { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+}

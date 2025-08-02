@@ -1,0 +1,362 @@
+@page "/setup"
+@using Microsoft.AspNetCore.Components.Forms
+@inject IGitHubConfigurationService ConfigurationService
+@inject IGitHubService GitHubService
+@inject INotificationService NotificationService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<PageTitle>GitHub Setup - Workflow Manager</PageTitle>
+
+<div class="container-fluid">
+    <div class="row justify-content-center">
+        <div class="col-md-8 col-lg-6">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white">
+                    <h3 class="card-title mb-0">
+                        <i class="bi bi-gear-fill me-2"></i>
+                        GitHub Configuration
+                    </h3>
+                </div>
+                <div class="card-body">
+                    @if (isLoading)
+                    {
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2">@loadingMessage</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <EditForm Model="configuration" OnValidSubmit="SaveConfiguration">
+                            <DataAnnotationsValidator />
+                            
+                            @if (!string.IsNullOrEmpty(errorMessage))
+                            {
+                                <div class="alert alert-danger" role="alert">
+                                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                                    @errorMessage
+                                </div>
+                            }
+
+                            @if (!string.IsNullOrEmpty(successMessage))
+                            {
+                                <div class="alert alert-success" role="alert">
+                                    <i class="bi bi-check-circle-fill me-2"></i>
+                                    @successMessage
+                                </div>
+                            }
+
+                            <div class="mb-3">
+                                <label for="accessToken" class="form-label">
+                                    GitHub Personal Access Token *
+                                    <i class="bi bi-info-circle text-muted ms-1" 
+                                       data-bs-toggle="tooltip" 
+                                       title="Required permissions: repo, workflow"></i>
+                                </label>
+                                <InputText id="accessToken" 
+                                          class="form-control" 
+                                          @bind-Value="configuration.AccessToken" 
+                                          type="password"
+                                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" />
+                                <ValidationMessage For="@(() => configuration.AccessToken)" class="text-danger" />
+                                <div class="form-text">
+                                    <small>
+                                        Create a token at 
+                                        <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">
+                                            GitHub Settings
+                                        </a>
+                                        with 'repo' and 'workflow' permissions.
+                                    </small>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="repositoryOwner" class="form-label">Repository Owner/Organization *</label>
+                                <InputText id="repositoryOwner" 
+                                          class="form-control" 
+                                          @bind-Value="configuration.RepositoryOwner"
+                                          placeholder="your-username or organization-name" />
+                                <ValidationMessage For="@(() => configuration.RepositoryOwner)" class="text-danger" />
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="repositoryName" class="form-label">Repository Name *</label>
+                                <InputText id="repositoryName" 
+                                          class="form-control" 
+                                          @bind-Value="configuration.RepositoryName"
+                                          placeholder="repository-name" />
+                                <ValidationMessage For="@(() => configuration.RepositoryName)" class="text-danger" />
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="workflowsPath" class="form-label">Workflows Directory Path</label>
+                                <InputText id="workflowsPath" 
+                                          class="form-control" 
+                                          @bind-Value="configuration.WorkflowsPath"
+                                          placeholder=".github/workflows" />
+                                <ValidationMessage For="@(() => configuration.WorkflowsPath)" class="text-danger" />
+                                <div class="form-text">
+                                    <small>Default: .github/workflows</small>
+                                </div>
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="webhookSecret" class="form-label">Webhook Secret (Optional)</label>
+                                <InputText id="webhookSecret" 
+                                          class="form-control" 
+                                          @bind-Value="configuration.WebhookSecret"
+                                          type="password"
+                                          placeholder="Optional webhook secret for security" />
+                                <ValidationMessage For="@(() => configuration.WebhookSecret)" class="text-danger" />
+                                <div class="form-text">
+                                    <small>Used to verify webhook payloads from GitHub.</small>
+                                </div>
+                            </div>
+
+                            <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                                <button type="button" class="btn btn-secondary me-md-2" @onclick="TestConnection" disabled="@isLoading">
+                                    <i class="bi bi-wifi me-1"></i>
+                                    Test Connection
+                                </button>
+                                <button type="submit" class="btn btn-primary" disabled="@isLoading">
+                                    <i class="bi bi-check-lg me-1"></i>
+                                    Save Configuration
+                                </button>
+                            </div>
+                        </EditForm>
+
+                        @if (showWebhookInfo)
+                        {
+                            <hr />
+                            <div class="alert alert-info">
+                                <h6><i class="bi bi-webhook me-2"></i>Webhook Configuration</h6>
+                                <p class="mb-2">
+                                    To receive real-time updates, configure a webhook in your GitHub repository:
+                                </p>
+                                <ol class="mb-2">
+                                    <li>Go to your repository settings → Webhooks</li>
+                                    <li>Click "Add webhook"</li>
+                                    <li>Set Payload URL: <code>@webhookUrl</code></li>
+                                    <li>Set Content type: <code>application/json</code></li>
+                                    <li>Select events: <code>Workflow runs</code> and <code>Workflow jobs</code></li>
+                                    @if (!string.IsNullOrEmpty(configuration.WebhookSecret))
+                                    {
+                                        <li>Set Secret: <code>[Your webhook secret]</code></li>
+                                    }
+                                </ol>
+                                <button type="button" class="btn btn-sm btn-outline-primary" @onclick="CopyWebhookUrl">
+                                    <i class="bi bi-clipboard me-1"></i>
+                                    Copy Webhook URL
+                                </button>
+                                <button type="button" class="btn btn-sm btn-success ms-2" @onclick="SetupWebhook">
+                                    <i class="bi bi-plus-circle me-1"></i>
+                                    Auto-Setup Webhook
+                                </button>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private GitHubConfigurationViewModel configuration = new();
+    private bool isLoading = false;
+    private string loadingMessage = "";
+    private string errorMessage = "";
+    private string successMessage = "";
+    private bool showWebhookInfo = false;
+    private string webhookUrl = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConfiguration();
+        webhookUrl = $"{Navigation.BaseUri.TrimEnd('/')}/api/webhook/github";
+    }
+
+    private async Task LoadConfiguration()
+    {
+        try
+        {
+            var existingConfig = await ConfigurationService.GetConfigurationAsync();
+            if (existingConfig != null)
+            {
+                configuration.RepositoryOwner = existingConfig.RepositoryOwner;
+                configuration.RepositoryName = existingConfig.RepositoryName;
+                configuration.WorkflowsPath = existingConfig.WorkflowsPath;
+                configuration.WebhookSecret = existingConfig.WebhookSecret;
+                // Don't populate the access token for security
+                showWebhookInfo = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading configuration: {ex.Message}";
+        }
+    }
+
+    private async Task TestConnection()
+    {
+        if (string.IsNullOrEmpty(configuration.AccessToken))
+        {
+            errorMessage = "Please enter an access token first.";
+            return;
+        }
+
+        isLoading = true;
+        loadingMessage = "Testing GitHub connection...";
+        errorMessage = "";
+        successMessage = "";
+
+        try
+        {
+            var isValid = await GitHubService.ValidateAccessTokenAsync(configuration.AccessToken);
+            if (isValid)
+            {
+                successMessage = "Connection successful! Token is valid.";
+            }
+            else
+            {
+                errorMessage = "Invalid access token or insufficient permissions.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Connection test failed: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            loadingMessage = "";
+        }
+    }
+
+    private async Task SaveConfiguration()
+    {
+        isLoading = true;
+        loadingMessage = "Saving configuration...";
+        errorMessage = "";
+        successMessage = "";
+
+        try
+        {
+            // Create a temporary configuration object for validation
+            var tempConfig = new GitHubConfiguration
+            {
+                AccessToken = configuration.AccessToken,
+                RepositoryOwner = configuration.RepositoryOwner,
+                RepositoryName = configuration.RepositoryName,
+                WorkflowsPath = configuration.WorkflowsPath,
+                WebhookSecret = configuration.WebhookSecret
+            };
+
+            // Validate the configuration
+            var isValid = await ConfigurationService.ValidateConfigurationAsync(tempConfig);
+            if (!isValid)
+            {
+                errorMessage = "Please fill in all required fields with valid values. Access token must start with 'ghp_' or 'github_pat_'.";
+                return;
+            }
+
+            // Test the connection
+            var connectionValid = await GitHubService.ValidateAccessTokenAsync(configuration.AccessToken);
+            if (!connectionValid)
+            {
+                errorMessage = "Invalid access token or insufficient permissions.";
+                return;
+            }
+
+            // Save the configuration
+            var config = new GitHubConfiguration
+            {
+                AccessToken = configuration.AccessToken,
+                RepositoryOwner = configuration.RepositoryOwner,
+                RepositoryName = configuration.RepositoryName,
+                WorkflowsPath = configuration.WorkflowsPath,
+                WebhookSecret = configuration.WebhookSecret
+            };
+
+            await ConfigurationService.SaveConfigurationAsync(config);
+            
+            successMessage = "Configuration saved successfully!";
+            showWebhookInfo = true;
+
+            // Notify success
+            await NotificationService.NotifyInfoAsync("GitHub configuration updated successfully");
+
+            // Clear the workflows cache since configuration changed
+            GitHubService.ClearWorkflowsCache();
+
+            // Redirect to dashboard after a short delay
+            await Task.Delay(1000); // Reduced delay
+            Navigation.NavigateTo("/", forceLoad: true);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error saving configuration: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            loadingMessage = "";
+        }
+    }
+
+    private async Task CopyWebhookUrl()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", webhookUrl);
+            successMessage = "Webhook URL copied to clipboard!";
+            await Task.Delay(3000);
+            successMessage = "";
+        }
+        catch (Exception)
+        {
+            // Fallback for browsers that don't support clipboard API
+            errorMessage = "Could not copy to clipboard. Please copy manually: " + webhookUrl;
+        }
+    }
+
+    private async Task SetupWebhook()
+    {
+        if (!showWebhookInfo)
+        {
+            errorMessage = "Please save the configuration first before setting up webhook.";
+            return;
+        }
+
+        isLoading = true;
+        loadingMessage = "Setting up webhook...";
+        errorMessage = "";
+        successMessage = "";
+
+        try
+        {
+            var success = await GitHubService.SetupWebhookAsync(webhookUrl, configuration.WebhookSecret);
+            if (success)
+            {
+                successMessage = "Webhook has been automatically configured in your GitHub repository!";
+                await NotificationService.NotifyInfoAsync("GitHub webhook configured successfully");
+            }
+            else
+            {
+                errorMessage = "Failed to setup webhook automatically. Please configure it manually using the instructions above.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error setting up webhook: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            loadingMessage = "";
+        }
+    }
+}
