@@ -52,3 +52,5 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+App_Data/DataProtection-Keys/*.xml
+App_Data/github-config.json
